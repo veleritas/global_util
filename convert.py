@@ -8,12 +8,13 @@
 # mim is OMIM identifier
 # NCBI = National Center for Biotechnology Information
 
+import json
+import logging
 import re
-import urllib2
 import sys
+import urllib2
 
 def query_ncbi(url):
-#	TODO: add error checking
 	BASE = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
 	response = urllib2.urlopen(BASE + url)
 	return response.read()
@@ -25,7 +26,8 @@ def uid_to_cui(uid): # one uid to one cui
 	xml = query_ncbi(req)
 
 	if re.search(r'cannot get document summary', xml) is not None:
-		raise Exception("UID {0} does not exist!".format(uid))
+		logging.warning("UID {0} does not exist!".format(uid))
+		return ""
 
 	res = re.findall(r'<ConceptId>C\w\d{6}</ConceptId>', xml)
 	assert len(res) == 1, "More than one CUI for UID {0}".format(uid)
@@ -36,8 +38,8 @@ def cui_to_uid(cui): # one cui to one uid
 	xml = query_ncbi(req)
 
 	if re.search(r'No items found.', xml) is not None:
+		logging.warning("No UID exists for {0}".format(cui))
 		return ""
-#		raise Exception("No UID exists for {0}".format(cui))
 
 	res = re.findall(r'<Id>\d+</Id>', xml)
 	assert len(res) == 1, "More than one UID for {0}".format(cui)
@@ -50,21 +52,22 @@ def uid_to_dmim(uid): # one uid to many dmim
 	xml = query_ncbi(req)
 
 	if re.search(r'cannot get document summary', xml) is not None:
-		raise Exception("UID {0} does not exist!".format(uid))
+		logging.warning("UID {0} does not exist!".format(uid))
+		return []
 
 	res = re.findall(r'&lt;MIM&gt;\d{6}&lt;/MIM&gt;', xml)
-	return [dmim[11:-12] for dmim in res]
+	return set([dmim[11:-12] for dmim in res])
 
 def dmim_to_uid(dmim): # one dmim to many uid
 	req = "esearch.fcgi?db=medgen&term=" + dmim + "[mim]"
 	xml = query_ncbi(req)
 
 	if re.search(r'No items found.', xml) is not None:
-		print "DMIM {0} does not exist in MedGen.".format(dmim)
+		logging.warning("DMIM {0} does not exist in MedGen.".format(dmim))
 		return []
 
 	res = re.findall(r'<Id>\d+</Id>', xml)
-	return [uid[4:-5] for uid in res]
+	return set([uid[4:-5] for uid in res])
 
 #-------------------------------------------------------------------------------
 
@@ -76,8 +79,7 @@ def dmim_to_cui(dmim):
 	if not uids:
 		return []
 
-	cuis = map(uid_to_cui, uids)
-	return list(set(cuis)) # returns unique cuis
+	return map(uid_to_cui, uids)
 
 def cui_to_dmim(cui):
 #	one cui to many dmim
@@ -88,20 +90,58 @@ def cui_to_dmim(cui):
 
 #-------------------------------------------------------------------------------
 
-# some gene ids are deprecated
-# eg gmim 603072 gives 6790 and 8465
-# but the 8465 is deprecated
+def geneID_to_gmim(gene_id):
+#	one entrez gene id to one omim gene id (hopefully..)
+#	gives the (hopefully unique) gmim of a entrez geneid
+
+	req = "esummary.fcgi?db=gene&id=" + gene_id + "&retmode=json"
+	resp = query_ncbi(req)
+
+	tree = json.loads(resp)
+
+#	prob gonna have errors at this line
+	gmims = tree["result"][gene_id]["mim"]
+
+	assert len(gmims) == 1, "too many gmims {0}".format(gene_id)
+	return gmims[0]
+
+
 
 def gmim_to_geneID(gmim):
+#	gmim 603072 gives 6790 and 8465 but 8465 is deprecated
+
+#	TODO TODO TODO TODO TODO TODO TODO
+#	should only return one string!!!
+
+
 #	converts a gene MIM into a gene ID (should be 1 to 1)
+#	returns only the current identifier
+#	remove the current only filter and it returns deprecated identifiers
+#	which may be necessary since the databases are pretty old..
+
+#	but it seems that both semmeddb and implicitome use current identifiers
 	req = "esearch.fcgi?db=gene&term=" + gmim + "[mim]+AND+current+only[filter]"
 	xml = query_ncbi(req)
 
-	if re.search(r'No items found.', xml) is not None:
+	if (re.search(r'No items found.', xml) is not None
+		or re.search(r'<Count>0</Count>', xml) is not None):
 		print "Gene MIM {0} has no gene ID.".format(gmim)
 		return ""
 
-#	TODO:
-#	get only the current gene id
 	res = re.findall(r'<Id>\d+</Id>', xml)
-	return [gene_id[4:-5] for gene_id in res]
+
+	if len(res) == 1:
+		return res[0][4:-5]
+
+#	multiple... so backconvert and cross check
+	gene_ids = [gid[4:-5] for gid in res]
+
+	temp_gmims = map(geneID_to_gmim, gene_ids)
+	assert temp_gmims.count(gmim) == 1, "too many gmimsasdfasdf {0}".format(gmim)
+	return gene_ids[temp_gmims.index(gmim)]
+
+
+def main():
+	print gmim_to_geneID("603175")
+if __name__ == "__main__":
+	main()
